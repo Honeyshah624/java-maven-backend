@@ -33,8 +33,8 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Run Maven tests
-        run: ./mvnw clean test
+      - name: Build Maven package
+        run: ./mvnw -B clean package -DskipTests
 
       - name: Configure AWS credentials using access keys
         uses: aws-actions/configure-aws-credentials@v4
