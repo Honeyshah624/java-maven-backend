@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+      - developer
+      - "feature/**"
+
+  pull_request:
+    branches:
+      - main
+      - developer
 
 permissions:
   contents: read
@@ -36,7 +43,31 @@ jobs:
       - name: Build Maven package
         run: ./mvnw -B clean package -DskipTests
 
+      - name: Decide deployment target
+        id: vars
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
+            echo "deploy=false" >> $GITHUB_OUTPUT
+            echo "Pull request build only. No deployment."
+          elif [[ "${GITHUB_REF_NAME}" == "developer" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+            echo "env_name=dev" >> $GITHUB_OUTPUT
+            echo "gitops_branch=developer" >> $GITHUB_OUTPUT
+            echo "overlay_path=apps/backend/overlays/dev" >> $GITHUB_OUTPUT
+            echo "image_tag=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+            echo "env_name=prod" >> $GITHUB_OUTPUT
+            echo "gitops_branch=main" >> $GITHUB_OUTPUT
+            echo "overlay_path=apps/backend/overlays/prod" >> $GITHUB_OUTPUT
+            echo "image_tag=prod-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          else
+            echo "deploy=false" >> $GITHUB_OUTPUT
+            echo "Feature branch build only. No deployment."
+          fi
+
       - name: Configure AWS credentials using access keys
+        if: steps.vars.outputs.deploy == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -44,35 +75,40 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
+        if: steps.vars.outputs.deploy == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set image tag
+      - name: Set ECR registry
+        if: steps.vars.outputs.deploy == 'true'
         run: |
-          echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
           echo "ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ steps.vars.outputs.image_tag }}" >> $GITHUB_ENV
 
       - name: Build Docker image
+        if: steps.vars.outputs.deploy == 'true'
         run: |
           docker build \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             .
 
       - name: Push Docker image to ECR
+        if: steps.vars.outputs.deploy == 'true'
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
       - name: Checkout GitOps repo
+        if: steps.vars.outputs.deploy == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GITOPS_REPO }}
           token: ${{ secrets.GITOPS_TOKEN }}
+          ref: ${{ steps.vars.outputs.gitops_branch }}
           path: gitops
 
       - name: Update image tag in GitOps repo
+        if: steps.vars.outputs.deploy == 'true'
         run: |
-          cd gitops/apps/backend/overlays/dev
+          cd gitops/${{ steps.vars.outputs.overlay_path }}
 
           sed -i "s|newTag:.*|newTag: ${IMAGE_TAG}|g" kustomization.yaml
 
@@ -81,6 +117,8 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add apps/backend/overlays/dev/kustomization.yaml
-          git commit -m "Update backend image tag to ${IMAGE_TAG}" || echo "No changes to commit"
-          git push
+          git add ${{ steps.vars.outputs.overlay_path }}/kustomization.yaml
+          git commit -m "Update ${{ steps.vars.outputs.env_name }} image tag to ${IMAGE_TAG}" || echo "No changes to commit"
+
+          git pull origin ${{ steps.vars.outputs.gitops_branch }} --rebase
+          git push origin ${{ steps.vars.outputs.gitops_branch }}
