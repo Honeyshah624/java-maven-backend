@@ -826,3 +826,4 @@ aws ecr delete-repository \
 ## Final Outcome
 
 The Java Maven backend application was successfully deployed on AWS EKS using a complete GitOps CI/CD workflow. GitHub Actions handled the build and image push process, Amazon ECR stored the Docker images, the GitOps repository maintained Kubernetes desired state, and Argo CD automatically deployed the latest application version to EKS.
+Feature flow test
